@@ -1,8 +1,11 @@
+#!/usr/bin/env python3
+
 import pandas as pd
 import numpy as np
-import easygui as eg
-from ortools.linear_solver import pywraplp
 from datetime import datetime, timedelta
+from tkinter import Tk   
+from tkinter.filedialog import askopenfilename
+from ortools.linear_solver import pywraplp
 
 roles = ['MOD', 'HON', 'ON', 'SW']
 
@@ -16,60 +19,23 @@ def main():
     solver = pywraplp.Solver('simple_mip_program', pywraplp.Solver.CBC_MIXED_INTEGER_PROGRAMMING)
     assigned_date, assigned_week = initialize_vars(solver, employees, dates)
     
+    # Link dependent variables 
+    link_variables(solver, assigned_date, assigned_week, employees, dates)
+
     # Initialize constraints
-
-    # Constraints:
-    # nobody can work more than 1 shift at a time 
-    for i in employees['name']:
-        for j in dates['date']:
-            solver.Add(solver.Sum([assigned_date[i, j, k] for k in roles]) <= 1)
-
-    # exactly 1 MOD, 1 HON, 3 ON, 1 SW per night 
-    for j in dates['date']:
-        solver.Add(solver.Sum([assigned_date[i, j, 'MOD'] for i in employees['name']]) == 1)
-        solver.Add(solver.Sum([assigned_date[i, j, 'HON'] for i in employees['name']]) == 1)
-        solver.Add(solver.Sum([assigned_date[i, j, 'ON'] for i in employees['name']]) == 3)
-        solver.Add(solver.Sum([assigned_date[i, j, 'SW'] for i in employees['name']]) == 1)
-
-    # tie assigned_date to assigned_week
-    for i in employees['name']:
-        for j in dates['date']:
-            dates_in_range = []
-            for date in dates['date']:
-                if j - timedelta(days=10) <= date <= j + timedelta(days=10):
-                    dates_in_range.append(date)
-
-            solver.Add(assigned_week[i, j] == \
-                solver.Sum([assigned_date[i, d, k] for d in dates_in_range \
-                                                    for k in roles]))
-    
-
-    # no more than 1 shift per week 
-    for i in employees['name']:
-        for j in dates['date']:
-            solver.Add(assigned_week[(i, j)] <= 2)
-    
-    # people can only work jobs they have 
-    for i, r in employees.iterrows():
-        for j in dates['date']:
-            for k in roles:
-                solver.Add(assigned_date[employees.loc[i, 'name'], j, k] <= employees.loc[i, 'role_'+k])
-
-    # people can only work days they're available
-    for i, r in employees.iterrows():
-        for j, s in dates.iterrows():
-            for k in roles:
-                solver.Add(assigned_date[employees.loc[i, 'name'], dates.loc[j, 'date'], k] <= employees.loc[i, dates.loc[j, 'day'].lower()+'_avail'])
-
+    generate_constraints(solver, assigned_date, assigned_week, employees, dates)
 
     # define objective (maximum preference)
-    solver.Maximize(solver.Sum([assigned_date[employees.loc[i, 'name'], dates.loc[j, 'date'], k] * (employees.loc[i, dates.loc[j, 'day'].lower() + '_pref'] + 0.5) for i, r in employees.iterrows()\
+    solver.Maximize(solver.Sum([assigned_date[employees.loc[i, 'name'], dates.loc[j, 'date'], k] * (employees.loc[i, dates.loc[j, 'day'].lower() + '_pref'] + 0.5)\
+                                                                                for i, r in employees.iterrows()\
                                                                                 for j, s in dates.iterrows()\
                                                                                 for k in roles]))
 
     solution_status = solver.Solve()
-
-    output_assignments(assigned_date, employees, dates)
+    if solution_status > 1:
+        print("Unable to find adequate solution")
+    else:
+        output_assignments(assigned_date, employees, dates)
 
     return
 
@@ -77,15 +43,18 @@ def main():
 
 
 def load_employees() -> pd.DataFrame:
-    """ returns a dataframe containing the imported overnight employees """
-    employee_path = eg.fileopenbox("Select Employee CSV File")
+    """ Returns a dataframe containing the imported overnight employees """
+    Tk().withdraw()
+    employee_path = askopenfilename(title="Select Employee CSV File", filetypes=(("All Files","*.*"), ("CSV Files","*.csv")))
     employee_df = pd.read_csv(employee_path)
+
     return employee_df
 
 
 def load_dates() -> pd.DataFrame:
-    """ returns a dataframe containing the imported overnight dates """
-    date_path = eg.fileopenbox("Select ON Dates CSV File")
+    """ Returns a dataframe containing the imported overnight dates """
+    Tk().withdraw()
+    date_path = askopenfilename(title="Select ON Dates CSV File", filetypes=(("All Files","*.*"), ("CSV Files","*.csv")))
     date_df = pd.read_csv(date_path, parse_dates=['date'])
     return date_df
 
@@ -127,6 +96,42 @@ def link_variables(solver: pywraplp.Solver, assigned_date: dict, \
                             solver.Sum([assigned_date[i, d, k] \
                                         for d in dates_in_range \
                                         for k in roles]))
+    return
+
+
+def generate_constraints(solver: pywraplp.Solver, assigned_date: dict, \
+                    assigned_week: dict, employees: pd.DataFrame, \
+                    dates: pd.DataFrame):
+    """ Adds hard constraints to solver parameters """
+    # nobody can work more than 1 shift at a time 
+    for i in employees['name']:
+        for j in dates['date']:
+            solver.Add(solver.Sum([assigned_date[i, j, k] for k in roles]) <= 1)
+
+    # exactly 1 MOD, 1 HON, 3 ON, 1 SW per night 
+    for j in dates['date']:
+        solver.Add(solver.Sum([assigned_date[i, j, 'MOD'] for i in employees['name']]) == 1)
+        solver.Add(solver.Sum([assigned_date[i, j, 'HON'] for i in employees['name']]) == 1)
+        solver.Add(solver.Sum([assigned_date[i, j, 'ON'] for i in employees['name']]) == 3)
+        solver.Add(solver.Sum([assigned_date[i, j, 'SW'] for i in employees['name']]) == 1)
+
+    # no more than 1 shift per week 
+    for i in employees['name']:
+        for j in dates['date']:
+            solver.Add(assigned_week[(i, j)] <= 2)
+    
+    # people can only work jobs they have 
+    for i, r in employees.iterrows():
+        for j in dates['date']:
+            for k in roles:
+                solver.Add(assigned_date[employees.loc[i, 'name'], j, k] <= employees.loc[i, 'role_'+k])
+
+    # people can only work days they're available
+    for i, r in employees.iterrows():
+        for j, s in dates.iterrows():
+            for k in roles:
+                solver.Add(assigned_date[employees.loc[i, 'name'], dates.loc[j, 'date'], k] <= employees.loc[i, dates.loc[j, 'day'].lower()+'_avail'])
+    return
 
 
 def output_assignments(assigned_date: dict, employees: pd.DataFrame, \
